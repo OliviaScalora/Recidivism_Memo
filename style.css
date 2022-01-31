@@ -1,0 +1,11 @@
+/* Whole document: */
+header{
+  font-family: Helvetica;
+  font-weight: bolder;
+  font-kerning: 10;
+  font-size: 20pt;
+}
+body{
+  font-family: Helvetica;
+  font-size: 12pt;
+}

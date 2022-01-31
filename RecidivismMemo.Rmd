@@ -1,0 +1,476 @@
+---
+output:
+  html_document:
+    css: style2.css
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE)
+
+library(lubridate)
+library(tidyverse)
+library(caret)
+library(kableExtra)
+library(ModelMetrics)
+library(plotROC)
+library(knitr)
+library(grid)
+library(gridExtra)
+library(QuantPsyc)
+library(ggthemes)
+library(ggpubr)
+
+root.dir = "https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/DATA/"
+source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
+
+palette_9_colors <- c("#00354b","#1d495f","#345d74","#4a738a","#6189a0",
+                      "#77a0b7","#8eb7cf","#a6cfe7","#bee8ff")
+palette_3_colors <- c("#00354b","#f2f4f7","#bee8ff")
+palette_2_colors <- c("#1d495f", "#6189a0")
+palette_1_colors <- c("#77a0b7")
+
+```
+
+<style>
+body    {background-color: #f2f4f7;}
+div.blue { background-color:#6189a0; 
+           padding: 20px; 
+           border-radius: 5px;
+           max-width: 70rem;
+           color: #f2f4f7;}
+div.dark { background-color:#f2f4f7; 
+           border-radius: 5px; 
+           padding: 27px; 
+           color: #00354b;}
+div.reg { background-color:#f2f4f7;
+          border-radius: 8px; 
+          opacity: 0.7;
+          padding: 20px; 
+          color: #000d12;
+          font-size: 16px;}
+</style>
+
+<div class = "dark">
+<h1>
+|     **Memo: Reducing recidivism through fair algorithms** 
+|     **Date:** 11/20/2021  
+</h1>
+
+<div class = "blue">
+
+**Dear Mayor,**
+
+
+In 2015, the average cost to keep an individual incarcerated in the state of Pennsylvania was \$42,727 ^1^. Combined with the social cost of separating families and creating gaps in communities, local and federal government have a shared responsibility of supporting programs which reduce incarceration and recidivism rates through allocating resources appropriately. Our team has developed a decision making tool, which, coupled with the job training re-entry program and your support, will greatly increase the efficiency of the current systems in place.
+
+To preface, the job training re-entry program is an effective and imperative step for individuals being released from prison. This program matches ex-offenders with job placements, offers training referrals, career counseling, provides job listings and similar employment-related services that are otherwise widely inaccessible for individuals with limited alternative support. Our program costs on average $10,000 per person, and is proven to decrease the risk of recidivism from 60% to 25% on average. 
+
+Placing ex-offenders in steady employment that matches their interests and abilities is an important effort. Preparing recently released ex-offenders with job training and practical work skills not only reduces rates of recidivism, but additionally improves the social, physical and mental health of communities who are disproportionately victimized by the American judicial system, specifically low income and African American communities.
+
+```{r data, results='hide', message=FALSE, warning=FALSE }
+
+raw_data <- read.csv('compas-scores-two-years.csv')
+
+df <- 
+  raw_data %>%
+  filter(days_b_screening_arrest <= 30) %>%
+  filter(days_b_screening_arrest >= -30) %>%
+  filter(is_recid != -1) %>%
+  filter(c_charge_degree != "O") %>%
+  filter(priors_count != "36") %>%
+  filter(priors_count != "25") %>%
+  mutate(length_of_stay = as.numeric(as.Date(c_jail_out) - as.Date(c_jail_in)),
+         priors_count = as.factor(priors_count),
+         Recidivated = as.factor(ifelse(two_year_recid == 1,"Recidivate","notRecidivate")),
+         recidivatedNumeric = ifelse(Recidivated == "Recidivate", 1, 0),
+         race2 = case_when(race == "Caucasian"        ~ "Caucasian",
+                           race == "African-American" ~ "African-American", 
+                           TRUE                       ~ "Other")) %>%
+  dplyr::select(sex,age,age_cat,race,race2,priors_count,two_year_recid,r_charge_desc,
+         c_charge_desc,c_charge_degree,r_charge_degree,juv_other_count,
+         length_of_stay,priors_count,Recidivated,recidivatedNumeric) %>%
+  filter(priors_count != 38)
+
+```
+
+```{r 1, message=FALSE, warning=FALSE, out.width= "65%", out.extra='style="float:right; padding:8px"'}
+
+margin = theme(plot.margin = unit(c(2,2,2,2), "cm"))
+
+pl1<- group_by(df, c_charge_desc) %>%
+  summarize(count = n()) %>%
+  mutate(rate = count / sum(count)) %>%
+  arrange(-rate) %>% head(9) %>%
+  ggplot(aes(reorder(c_charge_desc, rate, FUN = max), 
+             rate, fill = c_charge_desc)) +
+    geom_col() + coord_flip() +
+    scale_fill_manual(values = palette_9_colors) +
+    labs(x = "Charge", y = "Rate", title= "Most frequent initial charges") +
+    theme_tufte()+ 
+    theme(legend.position = "none",
+          text = element_text(size = 10, family = 'Monaco'),
+          panel.grid.major.x = element_line(color='grey85',linetype = 'dashed'),
+          plot.margin = unit(c(.5,1.5,.5,.5), "cm")) 
+
+pl2<- df %>%
+    group_by(Recidivated, race) %>%
+    summarize(n = n()) %>%
+    mutate(freq = n / sum(n)) %>% filter(Recidivated == "Recidivate") %>%
+    ggplot(aes(reorder(race, -freq), freq)) +
+    geom_bar(stat = "identity", position = "dodge", fill ='#00354b') +
+    labs(title = "Recidivism rate by race",
+         caption = "fig.1",
+         y = "Rate", x = "Race") +
+        theme_tufte()+ 
+    theme(legend.position = "none",
+          axis.text.y = element_text(color = '#f2f4f7', size = 12),
+          axis.text.x = element_text(angle = 45, hjust = 1, color = '#f2f4f7', size = 12),
+          text = element_text(size = 14, family = 'Monaco', color = '#f2f4f7'),
+          plot.background = element_rect(fill ='#6189a0', color = NA),
+          panel.grid.major.y= element_line(color='grey85',linetype = 'dashed'),
+          plot.margin = unit(c(.5,.5,.5,1.5), "cm")) 
+
+#grid.arrange(pl1, pl2, nrow=1)
+pl2
+
+```
+
+When we allow populations within our society to be disproportionately imprisoned, we uphold discriminatory systems that prevent vulnerable communities from meeting basic standards of living. Recidivism is a risk that comes with the release of any  previously incarcerated person, and as we know, that risk is higher within some populations over others. Figure 1 illustrates the observed rates of recidivism by race observed in Broward County, Florida. 
+
+We often hear that the exclusion of race from a predictive algorithm will result in an unbiased one. That is not the case, as exemplified by the COMPAS recidivism prediction algorithm built by Northpointe. In 2016, journalists from ProPublica evaluated the results of this widely used algorithm, and discovered clear division in errors made by the model across different race groups^2^. While the algorithm was technically accurate over all races, the model did not generalize well across race groups, creating a cascading disparate impact. 
+
+Our team has built a model inspired by improving the COMPAS algorithm, which accounts for the bias that is baked into the data. We have used COMPAS data from Broward County to train and test our algorithm. Figure 2 displays the results of our algorithm with a 50% decision threshold, and compares how the model performs across African American, Caucasian and 'Other' racial categories. The 'Rate_FP' metric stands for the rate of false positives predicted by the model. In other words, the ex-offender was predicted to recidivate but in reality did not. As you can imagine, if protocol is to keep prisoners who are expected to re-offend in jail, false positives the African American community will continue to see higher rates of incarceration and recidivism if not met with adequate support. At a 50% threshold, our model predicts more African Americans to recidivate when they in fact do not, over any other race, which is a symptom of biased data. We urge you to consider using this tool to allocate support towards incarcerated individuals who are at higher risk of re-offending, therefore lowering the risk. 
+
+```{r 3, results= 'hide', message=FALSE, warning=FALSE}
+train <- df %>% dplyr::sample_frac(.75)
+train_index <- as.numeric(rownames(train))
+test <- df[-train_index, ]
+```
+
+```{r 4, resuluts = 'hide', message=FALSE, warning=FALSE}
+reg.noRace <- glm(Recidivated ~ ., data = 
+                    train %>% dplyr::select(sex, age, age_cat,
+                                juv_other_count, length_of_stay, 
+                                priors_count, Recidivated),
+                family = "binomial"(link = "logit"))
+
+reg.withRace <- glm(Recidivated ~ ., data = 
+                      train %>% dplyr::select(sex, age, age_cat, race,
+                                  juv_other_count, length_of_stay, 
+                                  priors_count, Recidivated),
+                family = "binomial"(link = "logit"))
+```
+
+```{r 5, results = 'hide', message=FALSE, warning=FALSE}
+testProbs <- 
+  data.frame(class = test$recidivatedNumeric,
+             probs = predict(reg.noRace, test, type = "response"),
+             Race = test$race2)
+```
+
+```{r 6, results = 'hide', message=FALSE, warning=FALSE}
+
+pl3<- group_by(df, race2) %>%
+  summarize(averagePriors = mean(as.numeric(priors_count))) %>%
+  ggplot(aes(race2, averagePriors, fill = race2)) +
+    geom_bar(stat="identity", position = "dodge") +
+    labs(title="Mean priors by race", y = "Mean Priors", x = "Race") +
+    scale_fill_manual(values = palette_3_colors, name = "Recidivism") +
+            theme_tufte()+ 
+    theme(legend.position = "none",
+          text = element_text(size = 10, family = 'Monaco'),
+          panel.grid.major.y = element_line(color='grey85',linetype = 'dashed'),
+          plot.margin = unit(c(.5,1.5,.5,.5), "cm")) 
+
+pl4<- mutate(testProbs, predClass = ifelse(probs >= .5, 1, 0)) %>%
+  group_by(Race) %>%
+  summarize(Observed.recidivism = sum(class) / n(),
+            Predicted.recidivism = sum(predClass) / n()) %>%
+  gather(Variable, Value, -Race) %>%
+  ggplot(aes(Race, Value)) +
+    geom_bar(aes(fill = Race), position="dodge", stat="identity") +
+    scale_fill_manual(values = palette_3_colors) +
+    facet_wrap(~Variable) +
+    labs(title = "Observed and predicted recidivism", x = "Race", y = "Rate") +
+            theme_tufte()+ 
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          text = element_text(size = 10, family = 'Monaco'),
+          panel.grid.major.y = element_line(color='grey85',linetype = 'dashed'),
+          plot.margin = unit(c(.5,.5,.5,1.5), "cm"))
+
+pl7<- mutate(testProbs, predClass = ifelse(probs >= .5, 1, 0)) %>%
+  group_by(Race) %>%
+  summarize(Observed.recidivism = sum(class) / n(),
+            Predicted.recidivism = sum(predClass) / n()) %>%
+  gather(Variable, Value, -Race) %>%
+  ggplot(aes(Race, Value)) +
+    geom_bar(aes(fill = Race), position="dodge", stat="identity") +
+    scale_fill_manual(values = palette_3_colors) +
+    facet_wrap(~Variable) +
+    labs(title = "Observed and predicted recidivism", x = "Race", y = "Rate") +
+            theme_tufte()+ 
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          text = element_text(size = 10, family = 'Monaco'),
+          panel.grid.major.y = element_line(color='grey85',linetype = 'dashed'),
+          plot.margin = unit(c(.5,.5,.5,1.5), "cm"))
+
+```
+
+```{r 8, results = 'hide', message=FALSE, warning=FALSE}
+
+iterateThresholds <- function(data, observedClass, predictedProbs, group) {
+  observedClass <- enquo(observedClass)
+  predictedProbs <- enquo(predictedProbs)
+  group <- enquo(group)
+  x = .01
+  all_prediction <- data.frame()
+  
+  if (missing(group)) {
+  
+    while (x <= 1) {
+    this_prediction <- data.frame()
+    
+    this_prediction <-
+      data %>%
+      mutate(predclass = ifelse(!!predictedProbs > x, 1,0)) %>%
+      count(predclass, !!observedClass) %>%
+      summarize(Count_TN = sum(n[predclass==0 & !!observedClass==0]),
+                Count_TP = sum(n[predclass==1 & !!observedClass==1]),
+                Count_FN = sum(n[predclass==0 & !!observedClass==1]),
+                Count_FP = sum(n[predclass==1 & !!observedClass==0]),
+                Rate_TP = Count_TP / (Count_TP + Count_FN),
+                Rate_FP = Count_FP / (Count_FP + Count_TN),
+                Rate_FN = Count_FN / (Count_FN + Count_TP),
+                Rate_TN = Count_TN / (Count_TN + Count_FP),
+                Accuracy = (Count_TP + Count_TN) / 
+                           (Count_TP + Count_TN + Count_FN + Count_FP)) %>%
+      mutate(Threshold = round(x,2))
+    
+    all_prediction <- rbind(all_prediction,this_prediction)
+    x <- x + .01
+  }
+  return(all_prediction)
+  }
+  else if (!missing(group)) { 
+   while (x <= 1) {
+    this_prediction <- data.frame()
+    
+    this_prediction <-
+      data %>%
+      mutate(predclass = ifelse(!!predictedProbs > x, 1,0)) %>%
+      group_by(!!group) %>%
+      count(predclass, !!observedClass) %>%
+      summarize(Count_TN = sum(n[predclass==0 & !!observedClass==0]),
+                Count_TP = sum(n[predclass==1 & !!observedClass==1]),
+                Count_FN = sum(n[predclass==0 & !!observedClass==1]),
+                Count_FP = sum(n[predclass==1 & !!observedClass==0]),
+                Rate_TP = Count_TP / (Count_TP + Count_FN),
+                Rate_FP = Count_FP / (Count_FP + Count_TN),
+                Rate_FN = Count_FN / (Count_FN + Count_TP),
+                Rate_TN = Count_TN / (Count_TN + Count_FP),
+                Accuracy = (Count_TP + Count_TN) / 
+                           (Count_TP + Count_TN + Count_FN + Count_FP)) %>%
+      mutate(Threshold = round(x, 2))
+    
+    all_prediction <- rbind(all_prediction, this_prediction)
+    x <- x + .01
+  }
+  return(all_prediction)
+  }
+}
+
+
+```
+ 
+```{r 9,  message=FALSE, warning=FALSE, fig.width = 10, fig.height = 5}
+
+testProbs.thresholds <- 
+  iterateThresholds(data=testProbs, observedClass = class, 
+                    predictedProbs = probs, group = Race)
+
+pl5<- filter(testProbs.thresholds, Threshold == .5)  %>%
+  dplyr::select(Accuracy, Race, starts_with("Rate")) %>%
+  gather(Variable, Value, -Race) %>%
+    ggplot(aes(Variable, Value, fill = Race)) +
+      geom_bar(aes(fill = Race), position = "dodge", stat = "identity") +
+      scale_fill_manual(values = palette_3_colors) +
+      labs(title="Confusion matrix rates by race",
+           caption = 'fig.2',
+           subtitle = "50% threshold", x = "Outcome",y = "Rate") +
+      theme_tufte()+ 
+      theme(legend.position = "bottom",
+          text = element_text(size = 12, family = 'Monaco', color = '#f2f4f7'),
+          axis.text.y = element_text(color = '#f2f4f7', size = 12),
+          axis.text.x = element_text(angle = 45, hjust = 1, color = '#f2f4f7', size = 12),
+          plot.background = element_rect(fill ='#6189a0', color = NA),
+          panel.grid.major.y = element_line(color='grey85',linetype = 'dashed'),
+          plot.margin = unit(c(.5,1.5,.5,.5), "cm")) 
+
+
+pl6<- filter(testProbs.thresholds, Threshold == .4)  %>%
+  dplyr::select(Accuracy, Race, starts_with("Rate")) %>%
+  gather(Variable, Value, -Race) %>%
+    ggplot(aes(Variable, Value, fill = Race)) +
+      geom_bar(aes(fill = Race), position = "dodge", stat = "identity") +
+      scale_fill_manual(values = palette_3_colors) +
+      labs(title="Confusion matrix rates by race",
+           caption = 'fig.3',
+           subtitle = "40% threshold", x = "Outcome",y = "Rate") +
+      theme_tufte()+ 
+      theme(legend.position = "bottom",
+          text = element_text(size = 12, family = 'Monaco', color = '#f2f4f7'),
+          axis.text.y = element_text(color = '#f2f4f7', size = 12),
+          axis.text.x = element_text(angle = 45, hjust = 1, color = '#f2f4f7', size = 12),
+          plot.background = element_rect(fill ='#6189a0', color = NA),
+          panel.grid.major.y = element_line(color='grey85',linetype = 'dashed'),
+          plot.margin = unit(c(.5,1.5,.5,.5), "cm")) 
+
+grid.arrange(pl5, pl6, nrow=1)
+
+
+```
+ 
+To make this program more cost efficient, we are able to reduce the decision threshold from 50 to 40%, which as you can observe in figure 3, impacts the balance of our output metrics. This threshold adjustment will close the gap of errors between racial groups, while only slightly affecting the algorithm's overall accuracy. The costs to the city associated with each prediction metric are as follows.  
+
+<div class = "reg">
+
+**True Negative:**  Individual is predicted to not recidivate and does not in reality. These 
+individuals should have no problem re-entering society and thus are not priority for receiving the job-training program. Individuals who are not expected to recidivate may apply for the program ~ estimated 10%.
+
+**True Positive:**  Individual is predicted to recidivate and does in reality. The cost associated 
+with this outcome is the price per individual of the job-training program, which is $10,000 per person. With a 75% success rate, 25% of these predictions will recidivate which is a \$42,727 cost  per person. 
+   
+**False Negative:** Individual is predicted to not recidivate but does in reality. The cost associated 
+with this outcome is the price per individual to be in prison which is \$42,727 per person.
+
+**False Positive:** Individual is predicted to recidivate but does not in reality. The cost associated 
+with this outcome is the price per individual of the job-training program, which is $10,000 per person. This cost would be better allocated towards the true positive outcomes. 
+ 
+</div>
+<br>
+
+With these costs in mind, we can better interpret figures 2 and 3 in terms of their associated cost/benefit. Although the overall accuracy of the model decreases, we are able to increase the overall amount of false positives which have the lowest associated cost per person. Decreasing the threshold also increases the rate of True Positives. While the associated cost of this outcome his higher, the rate of ex-offenders having exposure to the job-training program increases, therefor increasing the associated social benefit. The cost/benefit table below calculates the estimated costs associated with each prediction metric at each threshold. By lowering the threshold, we are able to reduce funds spent on the program by roughly \$5,000,000. 
+
+<div class = "reg">
+```{r cost.ben.output, echo = FALSE, message=FALSE, warning=FALSE}
+testProbs50 <- 
+  testProbs %>%
+  mutate(predOutcome  = as.factor(ifelse(testProbs$probs > 0.5 , 1, 0)))
+cost_benefit_table50 <-
+  testProbs50 %>%
+  count(predOutcome, class) %>%
+  summarize(True_Negative = sum(n[predOutcome==0 & class==0]),
+            True_Positive = sum(n[predOutcome==1 & class==1]),
+            False_Negative = sum(n[predOutcome==0 & class==1]),
+            False_Positive = sum(n[predOutcome==1 & class==0])) %>%
+  gather(Variable, Count) %>%
+  mutate(Cost.65Threshold = case_when(Variable == "True_Negative"  ~ (Count * 0.1) * 10000,
+                          Variable == "True_Positive"  ~ (Count *.75 *10000) + (Count *.25 * 42727),
+                          Variable == "False_Negative" ~ Count * 42727,
+                          Variable == "False_Positive" ~ Count * 10000))
+
+testProbs65 <- 
+  testProbs %>%
+  mutate(predOutcome  = as.factor(ifelse(testProbs$probs > 0.40 , 1, 0)))
+
+cost_benefit_table65 <-
+  testProbs65 %>%
+  count(predOutcome, class) %>%
+  summarize(True_Negative = sum(n[predOutcome==0 & class==0]),
+            True_Positive = sum(n[predOutcome==1 & class==1]),
+            False_Negative = sum(n[predOutcome==0 & class==1]),
+            False_Positive = sum(n[predOutcome==1 & class==0])) %>%
+  gather(Variable, Count) %>%
+  mutate(bind_cols(data.frame(Cost.50 = c(
+                        "639000",
+                        "7636335",
+                        "12091741",
+                        "1980000"))),
+    Cost.40 = case_when(Variable == "True_Negative"  ~ (Count * 0.1) * 10000,
+                          Variable == "True_Positive"  ~ (Count *.75 *10000) + (Count *.25 * 42727),
+                          Variable == "False_Negative" ~ Count * 42727,
+                          Variable == "False_Positive" ~ Count * 10000),
+         bind_cols(data.frame(Social.Benefit = c(
+    "Individual re-enters society and becomes a productive member of local economy without government program assistance",
+    "Individual receives job training and career support and has a 75% chance of not recidivating. Community gains a productive member of local economy",
+    "NA",
+    "Individual receives job training and career support and has a 100% chance of not recidivating. Community gains a productive member of local economy"))),
+  bind_cols(data.frame(Description = c(
+    "Individual is predicted to not recidivate and does not in reality.",
+    "Individual is predicted to recidivate and does in reality.",
+    "Individual is predicted to not recidivate but does in reality.",
+    "Individual is predicted to recidivate but does not in reality."))))
+
+cost_ben65<- cost_benefit_table65%>%
+  kable(caption = 'Cost/Benefit Table',
+        align= c('l','c','r','r','l','l'))%>%
+  kable_styling(html_font = 'helvetica')
+
+cost_ben65
+```
+***
+**Total Cost 50% Threshold:** \$22,347,076  
+**Total Cost 40% Threshold:** \$17,349,648  
+<br>**Difference:**   \$4,997,428  
+
+</div>
+<br>
+Mayor, we urge you to take into consideration utilizing our fair predictive algorithm for allocating resources towards the job training re-entry program. The future of this algorithm includes further analysis to develop varying thresholds to control for each racial group, resulting in even more equitable outcomes. This is the potential and the future of these powerful predictive tools, and you have the power to implement these tools to incite positive change in our city. 
+</div>
+
+***
+
+1. Henrichson, Christian (2017).  *[Vera.org](https://www.vera.org/publications/price-of-prisons-2015-state-spending-trends/price-of-prisons-2015-state-spending-trends/price-of-prisons-2015-state-spending-trends-prison-spending)* Vera Institute of Justice 2017.
+
+
+2. Angwin, Julia, Jeff Larson, Surya Mattu, Lauren Kirchner. *[Machine Bias: There's software used across the country to predict future criminals. And it's biased against blacks](https://www.propublica.org/article/machine-bias-risk-assessments-in-criminal-sentencing)* ProPublica, May 23, 2016
+
+
+3. Aos, Steve, Phipps, Polly, Barnoski, Robert and Lieb, Roxanne. (2001). *[The Comparative Costs and Benefits of Programs to Reduce Crime](http://www.wsipp.wa.gov/ReportFile/1667/Wsipp_The-Effectiveness-of-Reentry-Programs-for-Incarcerated-Persons-Findings-for-the-Washington-Statewide-Reentry-Council_Report.pdf)*. Olympia: Washington State I 
+
+</div>
+
+
+
+```{r 10, results = 'hide', message=FALSE, warning=FALSE}
+tt2 <- ttheme_minimal(
+  core=list(bg_params = list(fill = 'white', col='grey95')),
+              fg_params=list(col="gray15"),
+  colhead=list(fg_params=list(col="gray15")))
+
+
+aucTable <- 
+  testProbs %>% 
+  group_by(Race) %>% 
+  summarize(AUC = auc(class,probs)) %>% 
+  mutate(AUC = as.character(round(AUC, 3))) 
+
+pl7<- mutate(testProbs.thresholds, pointSize = ifelse(Threshold == .48, 24, 16)) %>%
+  ggplot(aes(Rate_FP, Rate_TP, colour=Race)) + 
+    geom_point(aes(shape = pointSize)) + geom_line() + scale_shape_identity() +
+    scale_color_manual(values = palette_3_colors) +
+    geom_abline(slope = 1, intercept = 0, size = .5, color = 'grey70') +
+    annotation_custom(tableGrob(aucTable, rows = NULL,theme=tt2), xmin = .65, xmax = 1, ymin = .1, ymax = .45) +
+    labs(title="ROC Curves by race", x="False Positive Rate", y="True Positive Rate") +
+    theme_tufte()+ 
+    theme(legend.position = "bottom",
+          text = element_text(size = 10, family = 'Monaco'),
+          panel.grid.major.y = element_line(color='grey85',linetype = 'dashed'),
+          plot.margin = unit(c(.5,.5,.5,1.5), "cm")) 
+
+```
+
+
+
+
+ 
+
+
+
+
